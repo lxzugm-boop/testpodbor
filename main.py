@@ -169,7 +169,7 @@ TEXTS = {
         "items_header": "🔹 Alohida kartridjlar:",
         "item_line": "• {name} (art. {article})\n{url}",
         "error": "Xato yuz berdi. Yana urinib ko‘ring.",
-        "back_to_menu": "⬅️ Asosiy menyuga qaytish",
+        "back_to_menu": "⬅️ Asosiy menyуга qaytish",
         "data_reloaded": "Ma’lumotlar jadvalдан yangilandi.",
     },
 }
@@ -210,6 +210,25 @@ def is_row_active(row: Dict[str, Any]) -> bool:
     if s in ["0", "нет", "no", "false", "off", "inactive"]:
         return False
     return True
+
+
+def get_cart_name(row: Dict[str, Any]) -> str:
+    """
+    Универсальный способ достать название картриджа.
+    Пробуем несколько возможных заголовков в шапке таблицы.
+    """
+    POSSIBLE_FIELDS = [
+        "Название расходника",
+        "Наименование расходника",
+        "Название картриджа",
+        "Наименование картриджа",
+        "Наименование",
+        "Название",
+    ]
+    for field in POSSIBLE_FIELDS:
+        if field in row and row[field] not in (None, ""):
+            return str(row[field]).strip()
+    return str(row.get("Название расходника", "")).strip()
 
 
 def load_data_from_sheets() -> None:
@@ -275,7 +294,7 @@ def split_kits_and_items(rows: List[Dict[str, Any]]) -> (List[Dict[str, Any]], L
     kits = []
     singles = []
     for r in rows:
-        cart_name = str(r.get("Название расходника", "")).lower()
+        cart_name = get_cart_name(r).lower()
         if any(word in cart_name for word in ["комплект", "набор", "kit", "set"]):
             kits.append(r)
         else:
@@ -592,17 +611,27 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             return
 
         if step == "await_cart_name":
-            cart_name_norm = normalize_name(text)
+            # умный поиск: по части слова / нескольким словам
+            query_norm = normalize_name(text)
+            tokens = [tok for tok in query_norm.split() if len(tok) >= 2]
+
             matched_cart_art = set()
+
             for r in all_rows:
                 if not is_row_active(r):
                     continue
-                name = normalize_name(str(r.get("Название расходника", "")))
+
+                name_norm = normalize_name(get_cart_name(r))
                 cart_art = str(r.get("Артикул расходника", "")).split(".")[0]
                 if not cart_art:
                     continue
-                if cart_name_norm in name:
-                    matched_cart_art.add(cart_art)
+
+                if tokens:
+                    if all(tok in name_norm for tok in tokens):
+                        matched_cart_art.add(cart_art)
+                else:
+                    if query_norm and query_norm in name_norm:
+                        matched_cart_art.add(cart_art)
 
             if not matched_cart_art:
                 await update.message.reply_text(t["no_cartridges_found"])
@@ -655,7 +684,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 )
                 return
 
-            # >1 разных комплектов/картриджей с похожим названием – упрощённо скажем, что ничего не нашли
+            # пока не городим сложное меню по нескольким названиям — просим уточнить
             await update.message.reply_text(t["no_cartridges_found"])
             set_user_step(user_id, "main_menu")
             await update.message.reply_text(
@@ -694,7 +723,7 @@ async def send_system_info(
     if kits:
         lines.append(t["kits_header"])
         for r in kits:
-            cart_name = str(r.get("Название расходника", "")).strip()
+            cart_name = get_cart_name(r)
             cart_art = str(r.get("Артикул расходника", "")).split(".")[0]
             url = str(r.get("ссылка", "")).strip()
             line = t["item_line"].format(name=cart_name, article=cart_art, url=url)
@@ -703,7 +732,7 @@ async def send_system_info(
         if singles:
             lines.append(t["items_header"])
             for r in singles:
-                cart_name = str(r.get("Название расходника", "")).strip()
+                cart_name = get_cart_name(r)
                 cart_art = str(r.get("Артикул расходника", "")).split(".")[0]
                 url = str(r.get("ссылка", "")).strip()
                 line = t["item_line"].format(name=cart_name, article=cart_art, url=url)
@@ -712,7 +741,7 @@ async def send_system_info(
         lines.append(t["no_kits"])
         if singles:
             for r in singles:
-                cart_name = str(r.get("Название расходника", "")).strip()
+                cart_name = get_cart_name(r)
                 cart_art = str(r.get("Артикул расходника", "")).split(".")[0]
                 url = str(r.get("ссылка", "")).strip()
                 line = t["item_line"].format(name=cart_name, article=cart_art, url=url)
@@ -741,8 +770,8 @@ ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)
 async def lifespan(app: FastAPI):
     """
     Жизненный цикл FastAPI-приложения:
-    - пробуем загрузить данные из таблицы
-    - пробуем выставить webhook
+    - загружаем данные из таблицы
+    - выставляем webhook
     - стартуем/останавливаем PTB
     """
     load_data_from_sheets()
