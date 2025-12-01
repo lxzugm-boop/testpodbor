@@ -161,7 +161,7 @@ TEXTS = {
         "ask_cart_name": "Kartridj nomini kiriting:",
         "no_systems_found": "So‘rovingiz bo‘yicha tizim topilmadi.",
         "no_cartridges_found": "So‘rovingiz bo‘yicha kartridj topilmadi.",
-        "choose_system": "Bir nechta tizim топилди, o‘zingiznikini tanlang:",
+        "choose_system": "Bir nechta tizim topildi, o‘zingiznikini tanlang:",
         "choose_system_for_cart": "Bu kartridj bir nechta tizimda ishlatiladi. O‘zingiznikini tanlang:",
         "system_header": "Tizim: {name} (art. {article})",
         "kits_header": "🔹 Tavsiya etilgan kartridj to‘plamlari:",
@@ -170,7 +170,7 @@ TEXTS = {
         "item_line": "• {name} (art. {article})\n{url}",
         "error": "Xato yuz berdi. Yana urinib ko‘ring.",
         "back_to_menu": "⬅️ Asosiy menyuga qaytish",
-        "data_reloaded": "Ma’lumotlar jadvalдан yangilandi.",
+        "data_reloaded": "Ma’lumotlar jadvaldan yangilandi.",
     },
 }
 
@@ -193,17 +193,26 @@ def normalize_name(name: str) -> str:
 
 
 def load_data_from_sheets() -> None:
-    """Загружаем данные из Google Sheets в память."""
+    """Загружаем данные из Google Sheets в память, не падая при ошибке."""
     global all_rows, systems_by_article, systems_by_name, cartridges_by_article
 
     logger.info("Loading data from Google Sheets...")
 
-    info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
-    scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
-    creds = Credentials.from_service_account_info(info, scopes=scopes)
-    client = gspread.authorize(creds)
-    sheet = client.open_by_key(GOOGLE_SHEET_ID).sheet1
-    records = sheet.get_all_records()
+    try:
+        info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+        scopes = ["https://www.googleapis.com/auth/spreadsheets.readonly"]
+        creds = Credentials.from_service_account_info(info, scopes=scopes)
+        client = gspread.authorize(creds)
+        sheet = client.open_by_key(GOOGLE_SHEET_ID).sheet1
+        records = sheet.get_all_records()
+    except Exception as e:
+        logger.exception("Failed to load data from Google Sheets: %s", e)
+        # Очищаем структуры, но не валим сервис
+        all_rows = []
+        systems_by_article = defaultdict(list)
+        systems_by_name = defaultdict(list)
+        cartridges_by_article = defaultdict(list)
+        return
 
     all_rows = records
     systems_by_article = defaultdict(list)
@@ -697,7 +706,6 @@ ptb_app = (
     .build()
 )
 
-# регистрируем хендлеры
 ptb_app.add_handler(CommandHandler("start", start))
 ptb_app.add_handler(CommandHandler("reload", reload_data))
 ptb_app.add_handler(CallbackQueryHandler(handle_callback))
@@ -706,10 +714,19 @@ ptb_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Жизненный цикл FastAPI-приложения: загрузка данных, запуск/остановка PTB, установка webhook."""
-    load_data_from_sheets()  # подтягиваем таблицу при старте
-    logger.info("Setting Telegram webhook to %s", WEBHOOK_URL)
-    await ptb_app.bot.set_webhook(WEBHOOK_URL)
+    """
+    Жизненный цикл FastAPI-приложения:
+    - пробуем загрузить данные из таблицы
+    - пробуем выставить webhook
+    - стартуем/останавливаем PTB
+    """
+    load_data_from_sheets()
+
+    try:
+        logger.info("Setting Telegram webhook to %s", WEBHOOK_URL)
+        await ptb_app.bot.set_webhook(WEBHOOK_URL)
+    except Exception as e:
+        logger.exception("Failed to set webhook: %s", e)
 
     async with ptb_app:
         await ptb_app.start()
