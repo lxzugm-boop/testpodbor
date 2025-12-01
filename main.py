@@ -170,7 +170,7 @@ TEXTS = {
         "item_line": "• {name} (art. {article})\n{url}",
         "error": "Xato yuz berdi. Yana urinib ko‘ring.",
         "back_to_menu": "⬅️ Asosiy menyuga qaytish",
-        "data_reloaded": "Ma’lumotlar jadvaldan yangilandi.",
+        "data_reloaded": "Ma’lumotlar jadvalдан yangilandi.",
     },
 }
 
@@ -192,6 +192,26 @@ def normalize_name(name: str) -> str:
     return (name or "").strip().upper()
 
 
+def is_row_active(row: Dict[str, Any]) -> bool:
+    """
+    Логика колонки 'Активность':
+    - нет колонки / None / ""  -> считаем активной
+    - '0', 'нет', 'no', 'false', 'off', 'inactive' -> не активна
+    - всё остальное -> активна
+    """
+    if "Активность" not in row:
+        return True
+    val = row.get("Активность")
+    if val is None:
+        return True
+    s = str(val).strip().lower()
+    if s == "":
+        return True
+    if s in ["0", "нет", "no", "false", "off", "inactive"]:
+        return False
+    return True
+
+
 def load_data_from_sheets() -> None:
     """Загружаем данные из Google Sheets в память, не падая при ошибке."""
     global all_rows, systems_by_article, systems_by_name, cartridges_by_article
@@ -207,7 +227,6 @@ def load_data_from_sheets() -> None:
         records = sheet.get_all_records()
     except Exception as e:
         logger.exception("Failed to load data from Google Sheets: %s", e)
-        # Очищаем структуры, но не валим сервис
         all_rows = []
         systems_by_article = defaultdict(list)
         systems_by_name = defaultdict(list)
@@ -220,6 +239,9 @@ def load_data_from_sheets() -> None:
     cartridges_by_article = defaultdict(list)
 
     for row in all_rows:
+        if not is_row_active(row):
+            continue
+
         sys_art_raw = row.get("Артикул")
         sys_name = row.get("Название системы")
         cart_art_raw = row.get("Артикул расходника")
@@ -242,7 +264,7 @@ def load_data_from_sheets() -> None:
             cartridges_by_article[cart_art].append(row)
 
     logger.info(
-        "Loaded %d rows, %d systems, %d cartridge articles",
+        "Loaded %d rows, %d systems, %d cartridge articles (active only)",
         len(all_rows),
         len(systems_by_article),
         len(cartridges_by_article),
@@ -573,6 +595,8 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
             cart_name_norm = normalize_name(text)
             matched_cart_art = set()
             for r in all_rows:
+                if not is_row_active(r):
+                    continue
                 name = normalize_name(str(r.get("Название расходника", "")))
                 cart_art = str(r.get("Артикул расходника", "")).split(".")[0]
                 if not cart_art:
@@ -631,6 +655,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
                 )
                 return
 
+            # >1 разных комплектов/картриджей с похожим названием – упрощённо скажем, что ничего не нашли
             await update.message.reply_text(t["no_cartridges_found"])
             set_user_step(user_id, "main_menu")
             await update.message.reply_text(
@@ -744,3 +769,9 @@ async def telegram_webhook(request: Request):
     update = Update.de_json(data, ptb_app.bot)
     await ptb_app.process_update(update)
     return Response(status_code=HTTPStatus.OK)
+
+
+@app.get("/")
+async def healthcheck():
+    """Простой health-check для Render и проверки в браузере."""
+    return {"status": "ok"}
